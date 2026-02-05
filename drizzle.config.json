@@ -1,0 +1,8 @@
+{
+  "schema": "./shared/schema.ts",
+  "out": "./migrations",
+  "driver": "sqlite",
+  "dbCredentials": {
+    "url": "file:local.db"
+  }
+}

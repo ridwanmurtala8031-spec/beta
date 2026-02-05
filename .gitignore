@@ -1,0 +1,63 @@
+# Environment variables (CRITICAL - NEVER COMMIT)
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Database
+local.db
+local.db-*
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Runtime
+.env.production.local
+.cache
+
+# Database (local SQLite files - never commit)
+local.db
+local.db-*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+tmp/
+temp/
+*.tmp
+
+# Client dist (built separately)
+client/dist/
+client/node_modules/
+
+# Replit artifacts
+.replit
+.upm/
+
+# Optional Secrets manager
+.env*.vault
