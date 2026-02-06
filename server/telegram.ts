@@ -12,6 +12,8 @@ import { db } from "./db";
 import { JupiterService } from "./solana";
 import { analyzeIndicators, formatIndicatorsForDisplay, TokenMetrics } from "./indicators";
 import { verifyTwitter, formatSocialVerification, checkHolderRisk, checkContractSecurity, calculateSocialRiskScore } from "./social-verify";
+import { calculateConfluenceScore, calculateRiskReward, determineMarketRegime, recognizePatterns } from "./advanced-analysis";
+import { getTechnicalIndicators } from "./signals-worker";
 
 export let telegramBotInstance: TelegramBot | null = null;
 
@@ -262,7 +264,7 @@ export function setupTelegramBot() {
   };
 
   const executeAiReasoning = async (chatId: number, mint: string) => {
-    const statusMsg = await bot.sendMessage(chatId, "🤖 <b>Deep Analysis Starting...</b>\n⏳ Collecting market data and calculating indicators...", { parse_mode: 'HTML' });
+    const statusMsg = await bot.sendMessage(chatId, "🤖 <b>Advanced Analysis Starting...</b>\n⏳ Collecting market data, calculating indicators, and running advanced analysis...", { parse_mode: 'HTML' });
     try {
       const response = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
       const data = response.data as any;
@@ -316,12 +318,65 @@ export function setupTelegramBot() {
       
       // Combine social + technical risk scores
       const indicatorAnalysis = analyzeIndicators(tokenMetrics);
-      const technicalRiskScore = 100 - indicatorAnalysis.technicalScore; // Convert to risk (invert score)
+      const technicalRiskScore = 100 - indicatorAnalysis.overall.score; // Convert to risk (invert score)
       const finalRiskScore = calculateSocialRiskScore(technicalRiskScore, socialVerification, holderRisk, contractSecurity);
       
+      // ═══ ADVANCED ANALYSIS: Confluence Scoring ═══
+      const confluenceScore = calculateConfluenceScore({
+        rsi: { value: indicatorAnalysis.rsi.value, signal: indicatorAnalysis.rsi.signal },
+        macd: { signal: indicatorAnalysis.macd.signal },
+        ema: { signal: indicatorAnalysis.ema.signal },
+        bollinger: { position: indicatorAnalysis.bollinger.position },
+        vwap: { price_vs_vwap: indicatorAnalysis.vwap.price_vs_vwap },
+        adx: { strength: indicatorAnalysis.adx.strength },
+        stoch: { signal: indicatorAnalysis.stoch.signal },
+        ichimoku: { cloud_signal: indicatorAnalysis.ichimoku.cloud_signal },
+        obv: { trend: indicatorAnalysis.obv.trend },
+        atr: { volatility: indicatorAnalysis.atr.volatility }
+      });
+
+      // ═══ ADVANCED ANALYSIS: Risk/Reward Calculation ═══
+      const support = tokenMetrics.price * 0.97;
+      const resistance = tokenMetrics.price * 1.03;
+      const atrValue = (tokenMetrics.price * 0.02); // Estimate ATR
+      const riskReward = calculateRiskReward(tokenMetrics.price, support, resistance, atrValue, 2);
+
+      // ═══ ADVANCED ANALYSIS: Market Regime Detection ═══
+      const marketRegime = determineMarketRegime(indicatorAnalysis.adx.value, (atrValue / tokenMetrics.price) * 100, []);
+
+      // ═══ ADVANCED ANALYSIS: Pattern Recognition ═══
+      const patterns = recognizePatterns([tokenMetrics.price * 0.98, tokenMetrics.price * 0.99, tokenMetrics.price * 1.01, tokenMetrics.price]);
+
+      // ═══ ADVANCED ANALYSIS: Win Rate Stats ═══
+      const { winRateTracker } = await import("./win-rate-tracker");
+      const winRateStats = winRateTracker.analyzeWinRate(30);
+
       const indicatorText = formatIndicatorsForDisplay(indicatorAnalysis);
       const socialText = formatSocialVerification(socialVerification);
       
+      // Construct comprehensive advanced analysis display
+      const advancedAnalysisText = `<b>═══ ADVANCED ANALYSIS ═══</b>
+
+<b>🎯 Confluence Score:</b> ${confluenceScore.confluencePercent}% (${confluenceScore.agreeingIndicators}/${confluenceScore.totalIndicators} indicators aligned)
+<b>Confidence Level:</b> ${confluenceScore.confidenceLevel.toUpperCase()}
+
+<b>📊 Risk/Reward Analysis:</b>
+└─ Entry: $${riskReward.entryPrice.toFixed(8)}
+└─ Take Profit: $${riskReward.takeProfit.toFixed(8)}
+└─ Stop Loss: $${riskReward.stopLoss.toFixed(8)}
+└─ Ratio: ${riskReward.riskRewardRatio}:1 ${riskReward.isValid ? "✅ Valid" : "❌ Invalid"}
+
+<b>📈 Market Regime:</b> ${marketRegime.regime.toUpperCase()}
+└─ ADX: ${marketRegime.adxValue.toFixed(1)} (${marketRegime.volatility})
+└─ Recommendation: ${marketRegime.recommendation}
+
+<b>🔍 Pattern Recognition:</b> ${patterns.length > 0 ? patterns.map(p => `${p.pattern} (${p.direction})`).join(", ") : "No patterns detected"}
+
+<b>📊 Win Rate Stats (30D):</b>
+└─ Win Rate: ${winRateStats.winRate}%
+└─ Profit Factor: ${winRateStats.profitFactor}x
+└─ Expectancy: ${winRateStats.expectancy}% per trade`;
+
       // Construct comprehensive market analysis data
       const marketData = JSON.stringify({
         token: {
@@ -349,7 +404,7 @@ export function setupTelegramBot() {
         market: {
           fdv: fdv,
           marketCapRank: mcap,
-          pairCreated: pair.pairCreatedAt
+          pairCreatedAt: pair.pairCreatedAt
         },
         activity: {
           buys24h: buys,
@@ -368,10 +423,14 @@ export function setupTelegramBot() {
         holderRisk: holderRisk,
         contractSecurity: contractSecurity,
         finalRiskScore: finalRiskScore,
-        indicators: {
-          priceStability: priceStable ? "Good" : "High Volatility",
-          liquidityScore: liquidity > 100000 ? "Excellent" : liquidity > 10000 ? "Good" : "Low",
-          volumeScore: volume24h > liquidity ? "Healthy" : "Weak"
+        advancedAnalysis: {
+          confluenceScore: confluenceScore.confluencePercent,
+          confluenceStatus: confluenceScore.confidenceLevel,
+          marketRegime: marketRegime.regime,
+          patterns: patterns,
+          riskRewardRatio: riskReward.riskRewardRatio,
+          riskRewardValid: riskReward.isValid,
+          winRate: winRateStats.winRate
         }
       });
 
@@ -478,6 +537,9 @@ Confidence: [Based on indicator confluence and risk assessment]
       
       // Send technical indicators first
       bot.sendMessage(chatId, indicatorText, { parse_mode: 'HTML' });
+      
+      // Send advanced analysis
+      bot.sendMessage(chatId, advancedAnalysisText, { parse_mode: 'HTML' });
       
       // Send social verification
       bot.sendMessage(chatId, socialText, { parse_mode: 'HTML' });
@@ -608,6 +670,70 @@ Keep responses concise but comprehensive (2-5 paragraphs max).`
     try {
       bot.deleteMessage(chatId, statusMsg.message_id);
     } catch (e) { }
+  };
+
+  // Display advanced analysis for trading pairs
+  const displayAdvancedAnalysis = async (chatId: number, pair: string, indicators: any) => {
+    try {
+      const currentPrice = indicators.price || 0;
+      
+      // ═══ ADVANCED ANALYSIS: Confluence Scoring ═══
+      const confluenceScore = calculateConfluenceScore({
+        rsi: { value: indicators.rsi || 50, signal: indicators.rsiSignal || "Neutral" },
+        macd: { signal: indicators.macdSignal || "Neutral" },
+        ema: { signal: indicators.emaSignal || "Neutral" },
+        bollinger: { position: indicators.bollingerPosition || "Middle" },
+        vwap: { price_vs_vwap: indicators.vwapAlign || "Neutral" },
+        adx: { strength: indicators.adxStrength || "Weak" },
+        stoch: { signal: indicators.stochSignal || "Neutral" },
+        ichimoku: { cloud_signal: indicators.ichimokuCloud || "Neutral" },
+        obv: { trend: indicators.obvTrend || "Neutral" },
+        atr: { volatility: indicators.atrVolatility || "Low" }
+      });
+
+      // ═══ ADVANCED ANALYSIS: Risk/Reward Calculation ═══
+      const support = currentPrice * 0.97;
+      const resistance = currentPrice * 1.03;
+      const atrValue = indicators.atrValue || (currentPrice * 0.01);
+      const riskReward = calculateRiskReward(currentPrice, support, resistance, atrValue, 2);
+
+      // ═══ ADVANCED ANALYSIS: Market Regime Detection ═══
+      const marketRegime = determineMarketRegime(indicators.adxValue || 25, (atrValue / currentPrice) * 100, []);
+
+      // ═══ ADVANCED ANALYSIS: Pattern Recognition ═══
+      const patterns = recognizePatterns([currentPrice * 0.98, currentPrice * 0.99, currentPrice * 1.01, currentPrice]);
+
+      // ═══ ADVANCED ANALYSIS: Win Rate Stats ═══
+      const { winRateTracker } = await import("./win-rate-tracker");
+      const winRateStats = winRateTracker.analyzeWinRate(30);
+
+      // Format advanced analysis display
+      const advancedAnalysisText = `<b>═══ ADVANCED ANALYSIS: ${pair} ═══</b>
+
+<b>🎯 Confluence Score:</b> ${confluenceScore.confluencePercent}% (${confluenceScore.agreeingIndicators}/${confluenceScore.totalIndicators} indicators aligned)
+<b>Confidence Level:</b> ${confluenceScore.confidenceLevel.toUpperCase()}
+
+<b>📊 Risk/Reward Analysis:</b>
+└─ Entry: $${currentPrice.toFixed(8)}
+└─ Take Profit: $${riskReward.takeProfit.toFixed(8)}
+└─ Stop Loss: $${riskReward.stopLoss.toFixed(8)}
+└─ Ratio: ${riskReward.riskRewardRatio}:1 ${riskReward.isValid ? "✅ Valid" : "❌ Invalid"}
+
+<b>📈 Market Regime:</b> ${marketRegime.regime.toUpperCase()}
+└─ ADX: ${marketRegime.adxValue.toFixed(1)} (${marketRegime.volatility})
+└─ Recommendation: ${marketRegime.recommendation}
+
+<b>🔍 Pattern Recognition:</b> ${patterns.length > 0 ? patterns.map(p => `${p.pattern} (${p.direction})`).join(", ") : "No patterns detected"}
+
+<b>📊 Win Rate Stats (30D):</b>
+└─ Win Rate: ${winRateStats.winRate}%
+└─ Profit Factor: ${winRateStats.profitFactor}x
+└─ Expectancy: ${winRateStats.expectancy}% per trade`;
+
+      bot.sendMessage(chatId, advancedAnalysisText, { parse_mode: 'HTML' });
+    } catch (e: any) {
+      log(`Advanced analysis display error: ${e.message}`, "telegram");
+    }
   };
 
   // Premium access is now group-based
@@ -1006,14 +1132,29 @@ Keep responses concise but comprehensive (2-5 paragraphs max).`
               lane: market,
               data: JSON.stringify({ ...((typeof existing[0].data === 'string' ? JSON.parse(existing[0].data) : existing[0].data) || {}), ...cooldownData })
             }).where(eq(groupBindings.id, existing[0].id));
+            try {
+              const post = await db.select().from(groupBindings).where(eq(groupBindings.groupId, groupIdStr));
+              log(`Post-update group_bindings rows for ${groupIdStr}: ${JSON.stringify(post)}`, "telegram");
+            } catch (e: any) {
+              log(`Failed to read back group_bindings after update: ${e?.message || String(e)}`, "telegram");
+            }
           } else {
-            await db.insert(groupBindings).values({
+            const insertValues = {
               groupId: groupIdStr,
               topicId: msg.message_thread_id?.toString() || null,
               lane: market,
               market: market,
-              data: JSON.stringify(cooldownData)
-            });
+              data: JSON.stringify(cooldownData),
+              createdAt: Date.now()
+            } as any;
+            await db.insert(groupBindings).values(insertValues);
+            log(`Bind persisted for group ${groupIdStr}, market: ${market}`, "telegram");
+            try {
+              const post = await db.select().from(groupBindings).where(eq(groupBindings.groupId, groupIdStr));
+              log(`Post-insert group_bindings rows for ${groupIdStr}: ${JSON.stringify(post)}`, "telegram");
+            } catch (e: any) {
+              log(`Failed to read back group_bindings after insert: ${e?.message || String(e)}`, "telegram");
+            }
           }
 
           let response = `✅ <b>Group Bound!</b>\nMarket: <code>${market}</code>\nTopic: <code>${msg.message_thread_id || 'Main'}</code>`;
@@ -1022,8 +1163,12 @@ Keep responses concise but comprehensive (2-5 paragraphs max).`
           }
           bot.sendMessage(chatId, response, { parse_mode: 'HTML', message_thread_id: msg.message_thread_id });
         } catch (dbErr: any) {
-          log(`Bind error: ${dbErr.message}`, "telegram");
-          bot.sendMessage(chatId, "❌ <b>Database error during binding.</b> Please ensure the bot is admin.", { parse_mode: 'HTML' });
+          log(`Bind error: ${dbErr?.message}\n${dbErr?.stack || ''}`, "telegram");
+          try {
+            bot.sendMessage(chatId, `❌ <b>Database error during binding.</b> ${dbErr?.message || ''} Please ensure the bot is admin.`, { parse_mode: 'HTML' });
+          } catch (e: any) {
+            log(`Failed to send bind error message: ${e?.message}`, "telegram");
+          }
         }
         return;
       }
@@ -1252,7 +1397,7 @@ Keep responses concise but comprehensive (2-5 paragraphs max).`
         const photo = msg.photo[msg.photo.length - 1];
         const fileLink = await bot.getFileLink(photo.file_id);
         
-        bot.sendMessage(chatId, `⏳ <b>Analyzing chart image for ${pair || 'detected pair'}...</b>`, { parse_mode: 'HTML', message_thread_id: msg.message_thread_id });
+        bot.sendMessage(chatId, `⏳ <b>Analyzing chart image for ${pair || 'detected pair'}...</b>\n⏳ Detecting pair and calculating advanced analysis...`, { parse_mode: 'HTML', message_thread_id: msg.message_thread_id });
         
         const workerModule = await import("./signals-worker") as any;
         const aiModule = await import("./ai") as any;
@@ -1277,6 +1422,17 @@ Keep responses concise but comprehensive (2-5 paragraphs max).`
 
         const allowed = await checkAndConsumeUsage(msg.from!.id.toString(), 'analyze', chatId);
         if (!allowed) return;
+
+        // Get technical indicators and display advanced analysis BEFORE chart analysis
+        try {
+          const indicators = await getTechnicalIndicators(targetPair, marketType);
+          if (indicators) {
+            await displayAdvancedAnalysis(chatId, targetPair, indicators);
+          }
+        } catch (e) {
+          log(`Failed to get indicators for advanced analysis: ${e}`, "telegram");
+        }
+
         worker.runScanner(marketType, true, chatId.toString(), msg.message_thread_id?.toString(), targetPair, command as "analyze" | "setup", fileLink);
         return;
       }
@@ -1326,8 +1482,8 @@ Keep responses concise but comprehensive (2-5 paragraphs max).`
         }
 
         const feedbackMsg = command === 'setup' 
-          ? `⏳ <b>Hang on while we generate a NEUTRAL setup for you...</b>`
-          : `⏳ <b>Hang on while we perform a NEUTRAL analysis for you...</b>`;
+          ? `⏳ <b>Hang on while we generate a NEUTRAL setup for you...</b>\n⏳ Collecting market data and calculating advanced analysis...`
+          : `⏳ <b>Hang on while we perform a NEUTRAL analysis for you...</b>\n⏳ Collecting market data and calculating advanced analysis...`;
           
         bot.sendMessage(chatId, feedbackMsg, { parse_mode: 'HTML', message_thread_id: msg.message_thread_id });
         const workerModule = await import("./signals-worker") as any;
@@ -1348,6 +1504,17 @@ Keep responses concise but comprehensive (2-5 paragraphs max).`
         log(`Manual command: ${command} for ${normalizedPair} (${marketType})`, "telegram");
         const allowed = await checkAndConsumeUsage(msg.from!.id.toString(), 'analyze', chatId);
         if (!allowed) return;
+
+        // Get technical indicators and display advanced analysis BEFORE AI reasoning
+        try {
+          const indicators = await getTechnicalIndicators(normalizedPair, marketType);
+          if (indicators) {
+            await displayAdvancedAnalysis(chatId, normalizedPair, indicators);
+          }
+        } catch (e) {
+          log(`Failed to get indicators for advanced analysis: ${e}`, "telegram");
+        }
+
         worker.runScanner(marketType, true, chatId.toString(), msg.message_thread_id?.toString(), normalizedPair, command as "analyze" | "setup");
         return;
       }

@@ -12,6 +12,11 @@ import { restoreFromSupabase, backupToSupabase } from "./restore";
 import path from "path";
 import fs from "fs";
 import { createServer } from "http";
+import { fileURLToPath } from "url";
+
+// Create __dirname equivalent in ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
@@ -101,30 +106,58 @@ if (!process.env.SKIP_SERVER_START) {
 
           log("Running database migrations...", "db");
           try {
-            const setupSqlPath = path.resolve(process.cwd(), "migrations", "setup.sql");
-            if (fs.existsSync(setupSqlPath)) {
-              const setupSql = fs.readFileSync(setupSqlPath, "utf-8");
-              // Split by semicolon and execute each statement
-              const statements = setupSql.split(";").filter(s => s.trim());
-              for (const stmt of statements) {
-                if (stmt.trim()) {
-                  try {
-                    await db.run(sql.raw(stmt));
-                  } catch (migrateErr: any) {
-                    // Ignore "column already exists" errors - they're expected for idempotent migrations
-                    if (migrateErr.message && migrateErr.message.includes("duplicate column name")) {
-                      log(`Column already exists (safe to ignore): ${stmt.slice(0, 50)}...`, "db");
-                    } else if (migrateErr.message && migrateErr.message.includes("no such table")) {
-                      log(`Table doesn't exist yet (safe to ignore): ${stmt.slice(0, 50)}...`, "db");
-                    } else {
-                      throw migrateErr; // Re-throw unexpected errors
+            // Resolve migrations relative to this file location (server directory)
+            const migrationsDir = path.resolve(__dirname, "../migrations");
+            if (fs.existsSync(migrationsDir)) {
+              // Read all .sql files and sort them to ensure proper ordering
+              const migrationFiles = fs.readdirSync(migrationsDir)
+                .filter(f => f.endsWith('.sql'))
+                .sort(); // Numeric prefix ordering: 001_..., 002_..., setup.sql
+
+              for (const file of migrationFiles) {
+                const filePath = path.join(migrationsDir, file);
+                try {
+                  const sqlContent = fs.readFileSync(filePath, "utf-8");
+                  // Split by semicolon, remove comments and empty statements
+                  const rawStatements = sqlContent.split(";");
+                  const statements = rawStatements
+                    .map(s => s.trim())
+                    .filter(s => s && !s.startsWith("--")); // Remove comments and empty lines
+                  
+                  log(`[${file}] Found ${statements.length} statements to execute`, "db");
+                  
+                  let successCount = 0;
+                  for (const stmt of statements) {
+                    if (stmt.trim()) {
+                      try {
+                        await db.run(sql.raw(stmt));
+                        successCount++;
+                      } catch (migrateErr: any) {
+                        const errMsg = migrateErr.message || String(migrateErr);
+                        // Ignore "column already exists" errors - they're expected for idempotent migrations
+                        if (errMsg.includes("duplicate column name") || errMsg.includes("already exists")) {
+                          log(`Already exists (safe to ignore): ${stmt.slice(0, 50)}...`, "db");
+                          successCount++;
+                        } else if (errMsg.includes("no such table")) {
+                          log(`Table doesn't exist yet (safe to ignore): ${stmt.slice(0, 50)}...`, "db");
+                          successCount++;
+                        } else {
+                          log(`Migration statement failed: ${stmt.slice(0, 80)}...`, "db");
+                          log(`Full error: ${errMsg}`, "db");
+                          throw migrateErr; // Re-throw unexpected errors
+                        }
+                      }
                     }
                   }
+                  log(`Migration complete: ${file} (${successCount}/${statements.length} statements)`, "db");
+                } catch (fileErr) {
+                  log(`Error running migration ${file}: ${fileErr}`, "db");
+                  throw fileErr;
                 }
               }
-              log("Migrations complete.", "db");
+              log(`All migrations complete (${migrationFiles.length} files processed).`, "db");
             } else {
-              log("Setup SQL file not found, skipping migrations", "db");
+              log("Migrations directory not found, skipping migrations", "db");
             }
 
             // Seed owner into admins table if missing

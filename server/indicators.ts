@@ -1,6 +1,7 @@
 /**
  * Technical Indicators Calculator
  * Provides comprehensive technical analysis for crypto tokens
+ * Now integrated with advanced analysis (confluence, MTF, risk/reward, divergence, patterns)
  */
 
 export interface IndicatorAnalysis {
@@ -14,7 +15,7 @@ export interface IndicatorAnalysis {
   adx: { value: number; trend: string; strength: string };
   vwap: { level: number; price_vs_vwap: string };
   ichimoku: { cloud_signal: string; momentum: string };
-  overall: { score: number; confidence: string; recommendation: string };
+  overall: { score: number; confidence: string; recommendation: string; confluenceScore?: number; confluencePercent?: number };
 }
 
 export interface TokenMetrics {
@@ -404,7 +405,7 @@ export function calculateIchimoku(high: number[], _low: number[], close: number[
 }
 
 /**
- * Comprehensive Indicator Analysis
+ * Comprehensive Indicator Analysis with Confluence Scoring
  */
 export function analyzeIndicators(metrics: TokenMetrics, priceHistory: number[] = []): IndicatorAnalysis {
   // Generate synthetic price history if not provided
@@ -423,13 +424,52 @@ export function analyzeIndicators(metrics: TokenMetrics, priceHistory: number[] 
   const vwap = calculateVWAP(priceHistory, generateVolumeHistory(metrics, priceHistory.length));
   const ichimoku = calculateIchimoku(priceHistory, priceHistory, priceHistory);
 
-  // Calculate overall score
+  // ═══ NEW: Confluence Scoring (% of indicators agreeing) ═══
+  let bullishCount = 0;
+  let bearishCount = 0;
+
+  // Count agreeing indicators
+  if (rsi.value > 60 || rsi.signal.includes("Bullish")) bullishCount++;
+  if (rsi.value < 40 || rsi.signal.includes("Bearish")) bearishCount++;
+
+  if (macd.signal.includes("Bullish")) bullishCount++;
+  if (macd.signal.includes("Bearish")) bearishCount++;
+
+  if (ema.alignment === "Bullish" || ema.signal.includes("Bullish")) bullishCount++;
+  if (ema.alignment === "Bearish" || ema.signal.includes("Bearish")) bearishCount++;
+
+  if (bollinger.position.includes("Lower")) bullishCount++;
+  if (bollinger.position.includes("Upper")) bearishCount++;
+
+  if (vwap.price_vs_vwap.includes("Above")) bullishCount++;
+  if (vwap.price_vs_vwap.includes("Below")) bearishCount++;
+
+  if (stoch.signal.includes("Bullish")) bullishCount++;
+  if (stoch.signal.includes("Bearish")) bearishCount++;
+
+  if (ichimoku.cloud_signal.includes("Bullish")) bullishCount++;
+  if (ichimoku.cloud_signal.includes("Bearish")) bearishCount++;
+
+  if (obv.trend === "Bullish") bullishCount++;
+  if (obv.trend === "Bearish") bearishCount++;
+
+  if (adx.strength !== "Weak") bullishCount += adx.trend === "Uptrend" ? 1 : 0;
+  if (adx.strength !== "Weak") bearishCount += adx.trend === "Downtrend" ? 1 : 0;
+
+  const totalAgree = Math.max(bullishCount, bearishCount);
+  const confluencePercent = totalAgree > 0 ? (totalAgree / 10) * 100 : 50;
+
+  // Calculate overall score with CONFLUENCE WEIGHTING
   let score = 50;
   let confirmations = 0;
 
-  // RSI confirmation (20 points max)
+  // Confluence baseline (most important - minimum must be met)
+  const confluenceBonus = (confluencePercent / 100) * 30; // Up to 30 points from confluence
+  score += confluenceBonus;
+
+  // RSI confirmation (15 points max)
   if (rsi.value > 60 || rsi.value < 40) {
-    score += (Math.abs(rsi.value - 50) / 5) * 2;
+    score += (Math.abs(rsi.value - 50) / 5) * 1.5;
     confirmations++;
   }
 
@@ -467,18 +507,24 @@ export function analyzeIndicators(metrics: TokenMetrics, priceHistory: number[] 
     score += 7;
   }
 
-  score = Math.min(100, score);
+  // Volatility adjustment (ATR - high volatility = lower score)
+  if (atr.volatility === "Very High") score -= 5;
+  else if (atr.volatility === "Low") score += 3;
+
+  score = Math.min(100, Math.max(0, score));
 
   let confidence = "Low";
-  if (confirmations >= 5) confidence = "Very High";
-  else if (confirmations >= 4) confidence = "High";
-  else if (confirmations >= 3) confidence = "Moderate";
-  else if (confirmations >= 2) confidence = "Fair";
+  if (confluencePercent >= 80) confidence = "Very High";
+  else if (confluencePercent >= 70) confidence = "High";
+  else if (confluencePercent >= 60) confidence = "Moderate";
+  else if (confluencePercent >= 40) confidence = "Fair";
 
   let recommendation = "NEUTRAL";
-  if (score >= 75) recommendation = "🟢 BUY SIGNAL";
+  if (score >= 80) recommendation = "🟢 STRONG BUY";
+  else if (score >= 70) recommendation = "🟢 BUY";
   else if (score >= 60) recommendation = "🟡 CAUTIOUS BUY";
-  else if (score <= 25) recommendation = "🔴 SELL SIGNAL";
+  else if (score <= 20) recommendation = "🔴 STRONG SELL";
+  else if (score <= 30) recommendation = "🔴 SELL";
   else if (score <= 40) recommendation = "🔴 CAUTIOUS SELL";
 
   return {
@@ -492,7 +538,13 @@ export function analyzeIndicators(metrics: TokenMetrics, priceHistory: number[] 
     adx,
     vwap,
     ichimoku,
-    overall: { score: Math.round(score), confidence, recommendation }
+    overall: {
+      score: Math.round(score),
+      confidence,
+      recommendation,
+      confluenceScore: totalAgree,
+      confluencePercent: Math.round(confluencePercent)
+    }
   };
 }
 
@@ -529,11 +581,17 @@ function generateVolumeHistory(metrics: TokenMetrics, length: number): number[] 
 }
 
 /**
- * Format indicators for display in Telegram
+ * Format indicators for display in Telegram with Enhanced Confluence Scoring
  */
 export function formatIndicatorsForDisplay(analysis: IndicatorAnalysis): string {
+  const confluenceScore = analysis.overall.confluencePercent || 0;
+  const confluenceStatus = confluenceScore >= 80 ? "✅ EXCELLENT" : confluenceScore >= 60 ? "🟡 GOOD" : "⚠️ WEAK";
+
   return `
 <b>═══ TECHNICAL INDICATORS ═══</b>
+
+<b>🎯 Indicator Confluence: ${confluenceScore}% ${confluenceStatus}</b>
+└─ ${analysis.overall.confluenceScore}/10 indicators aligned
 
 <b>📊 RSI (${analysis.rsi.value})</b>
 └─ ${analysis.rsi.signal} | Strength: ${analysis.rsi.strength}
